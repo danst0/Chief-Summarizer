@@ -1,0 +1,11 @@
+[Unit]
+Description=Run chief-summarizer every 2 hours
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=2h
+AccuracySec=1m
+Unit=chief-summarizer.service
+
+[Install]
+WantedBy=timers.target

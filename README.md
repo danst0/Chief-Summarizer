@@ -1,34 +1,96 @@
 # chief-summarizer
 
-`chief-summarizer` is a Go CLI that batch-generates structured markdown summaries for every `.md` document inside a directory tree. It orchestrates chunk-level and document-level calls to a local Ollama instance, writing the final result next to the source file.
+A Go CLI tool that automatically generates structured markdown summaries for all `.md` files in a directory tree using local Ollama models.
 
-## 1. Feature & CLI specification
-- **Invocation**: `chief-summarizer [flags] <rootPath>` where `rootPath` must be supplied and can reference either a directory tree or a single markdown file.
-- **File discovery**: walk every subdirectory, select regular `.md` files that do not already end in `_summary.md`.
-- **Summary placement**: write `<name>_summary.md` beside each source; skip when the file already exists unless `-force` is used.
-- **Chunking**: character-based slices with configurable size/overlap via `-chunk-size` (default 4000) and `-chunk-overlap` (default 400).
-- **Model selection**: connect to `GET /api/tags` on the Ollama host (default `http://localhost:11434`) and pick the best available model from `qwen2.5:14b`, `llama3.1:8b`, `mistral:7b`, unless `-model` overrides it. If the exact model is missing, the tool automatically picks the closest installed variant (matching base names or prefixes) before falling back to any available model.
-- **Flags**: include `-host`, `-model`, `-chunk-size`, `-chunk-overlap`, `-force`, `-dry-run`, `-max-files`, `-verbose`, `-quiet`, `-exclude <regex>` (repeatable), `-request-timeout <duration>` (default `5m`), `-version`.
-- **Console output**: one status line per candidate (`OK`, `SKIP`, `DRY`, `ERR`) showing file paths, chunk counts, selected model, and failure reasons where applicable, plus live `CHNK` / `MERGE` indicators while Ollama works through chunks to show progress. Files are processed in a randomized order on every run to avoid bias.
-- **Exit codes**: `0` when all processed files succeed, `1` whenever any error occurs (walk errors, I/O, LLM failure, etc.).
+## Overview
 
-## 2. Processing logic / architecture
-1. **Init**: parse flags, validate the required `rootPath`, derive the HTTP timeout (default 5m, overridable via `-request-timeout`), negotiate the model (override > autodetect > fallback list).
-2. **Planning**: `filepath.WalkDir` captures every qualifying markdown file, derives the target filename, and applies exclusion regexes (`-exclude`), `-force`, `-dry-run`, and `-max-files` gates. The resulting candidate list is shuffled before processing so execution order changes per run. Console chatter (status/progress lines) respects `-quiet`.
-3. **Pipeline (`processFile`)**:
-   - Read the entire markdown document.
-   - Chunk text at rune boundaries respecting configured size/overlap.
-   - For each chunk, build the chunk prompt, call `POST /api/generate`, and collect intermediate summaries.
-   - Categorize the original length (SHORT/MEDIUM/LONG) based on rune count.
-   - Feed chunk summaries plus the length hint into the final prompt to derive the cohesive markdown summary.
-   - Honor `-dry-run` by skipping network calls and file writes while still reporting intended actions.
-   - Write `<name>_summary.md` atomically, keeping the two-line ultra-short intro followed by the longer section layout.
-4. **Error handling**: propagate recoverable errors per file, mark `hadError`, continue walking, and exit with code `1` if any errors were observed.
-5. **Concurrency (optional)**: use a worker pool (default `min(max(NumCPU,1),4)`) fed by a channel of file plans, while synchronizing console output to maintain deterministic status lines.
+`chief-summarizer` walks through your markdown documents, intelligently chunks them, and creates comprehensive summaries using a local Ollama instance. Each summary is saved alongside the original file with a `_summary.md` suffix.
 
-## 3. Prompt templates
+## Features
 
-### 3.1 Chunk summary prompt
+### Core Functionality
+- 🔄 **Batch Processing**: Automatically processes all markdown files in a directory tree
+- 📝 **Smart Chunking**: Character-based text splitting with configurable size and overlap
+- 🤖 **Ollama Integration**: Uses local Ollama models (qwen2.5:14b, llama3.1:8b, mistral:7b)
+- 🎯 **Intelligent Model Selection**: Automatic fallback to closest available model variant
+- 📊 **Progress Tracking**: Live chunk and merge indicators during processing
+- 🎲 **Randomized Processing**: Processes files in random order each run to avoid bias
+- ⚙️ **Highly Configurable**: Extensive CLI flags for customization
+
+### Requirements
+- Go 1.21 or later
+- Running Ollama instance (default: `http://localhost:11434`)
+- Config file at `~/.config/chiefsummarizer.yaml` (required)
+
+## Usage
+
+### Basic Invocation
+```bash
+chief-summarizer [flags] <rootPath>
+```
+
+The `rootPath` can be either:
+- A directory tree (processes all `.md` files recursively)
+- A single markdown file
+
+### CLI Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-host` | `http://localhost:11434` | Ollama server URL |
+| `-model` | auto-detect | Override model selection |
+| `-chunk-size` | `4000` | Characters per chunk |
+| `-chunk-overlap` | `400` | Overlap between chunks |
+| `-force` | `false` | Overwrite existing summaries |
+| `-dry-run` | `false` | Show what would be done |
+| `-max-files` | unlimited | Maximum files to process |
+| `-verbose` | `false` | Detailed output |
+| `-quiet` | `false` | Minimal output |
+| `-exclude` | none | Regex pattern to exclude files (repeatable) |
+| `-request-timeout` | `10m` | HTTP request timeout |
+| `-version` | - | Show version info |
+
+### Output Status Codes
+- `OK`: Successfully processed
+- `SKIP`: Skipped (summary exists, not forced)
+- `DRY`: Dry-run mode (no action taken)
+- `ERR`: Error occurred
+
+### Exit Codes
+- `0`: All files processed successfully
+- `1`: One or more errors occurred
+
+## How It Works
+
+`chief-summarizer` follows a systematic pipeline:
+
+1. **Initialization**
+   - Parse CLI flags and validate `rootPath`
+   - Negotiate model selection (override → auto-detect → fallback)
+   - Configure HTTP timeout
+
+2. **File Discovery**
+   - Walk directory tree using `filepath.WalkDir`
+   - Select `.md` files that don't end in `_summary.md`
+   - Apply exclusion patterns (`-exclude`)
+   - Shuffle file list for randomized processing
+
+3. **Processing Pipeline**
+   - Read markdown document
+   - Split into chunks at rune boundaries (respects size/overlap)
+   - Generate chunk summaries via Ollama API
+   - Categorize document length (SHORT/MEDIUM/LONG)
+   - Synthesize final summary from chunks
+   - Write `<name>_summary.md` atomically
+
+4. **Error Handling**
+   - Continue processing on recoverable errors
+   - Track error state per file
+   - Exit with code `1` if any errors occurred
+
+## Prompt Templates
+
+### Chunk Summary Prompt
 ```
 You are "Chief Summarizer", an assistant that creates concise summaries in the original language of the text.
 
@@ -50,7 +112,7 @@ Excerpt:
 ---
 ```
 
-### 3.2 Final combined summary prompt
+### Final Combined Summary Prompt
 ```
 You are "Chief Summarizer", an assistant that creates structured summaries in the original language of the source text.
 
@@ -61,6 +123,7 @@ Task:
 - Maintain the SAME LANGUAGE as the original text (usually German).
 - Keep important names, dates and numbers.
 - Be neutral and factual.
+- Do **not** output any "Thinking" paragraphs or hidden reasoning traces.
 
 Output format (Markdown, fixed):
 
@@ -90,19 +153,116 @@ Now produce ONLY the markdown summary as specified above.
 Do not add any intro text or explanations around it.
 ```
 
-> Tip: prepend `Original document length category: SHORT|MEDIUM|LONG.` before the `Input:` block so the model can tune the layout.
+> **Tip**: Prepend `Original document length category: SHORT|MEDIUM|LONG.` before the `Input:` block so the model can adjust the layout accordingly.
 
-## 4. Build & install
+## Installation
 
-- Build the CLI: `make build`
-- Install into `~/.local/bin`: `make install`
-- Remove the local binary: `make clean`
+### Prerequisites
+1. Install [Go](https://golang.org/dl/) 1.21 or later
+2. Install and start [Ollama](https://ollama.ai/)
+3. Pull a supported model:
+   ```bash
+   ollama pull qwen2.5:14b
+   # or
+   ollama pull llama3.1:8b
+   # or
+   ollama pull mistral:7b
+   ```
+4. Create config file:
+   ```bash
+   mkdir -p ~/.config
+   cp chiefsummarizer.yaml.example ~/.config/chiefsummarizer.yaml
+   ```
+   
+   The config file can be empty for now (all settings are via CLI flags), but it must exist.
 
-Ensure `~/.local/bin` is on your `PATH` so `chief-summarizer` is discoverable.
+### Build & Install
 
-## 5. Rough Go skeleton
-- `cmd/chief-summarizer/main.go` wires together flag parsing, model selection, directory walking, and the future processing pipeline.
-- `Config` holds every CLI option; `preferredModels` enumerates default model priorities.
-- Helper stubs (`isMarkdown`, `isSummaryFile`, `summaryFilename`, `workersDefault`) isolate filesystem logic.
-- `processFile` is intentionally left unimplemented; it will encapsulate reading, chunking, chunk summarization, final synthesis, and file writes.
-- Future work: add `internal/chunking`, `internal/ollama`, and `internal/prompts` packages to keep responsibilities separated and simplify unit testing.
+```bash
+# Build the binary
+make build
+
+# Install to ~/.local/bin
+make install
+
+# Clean build artifacts
+make clean
+```
+
+Ensure `~/.local/bin` is on your `PATH`:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+## Automation with systemd
+
+Automate summary generation with the provided systemd units (runs every 2 hours, processes max 3 files).
+
+### Setup
+
+1. **Copy systemd units**
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp systemd/chief-summarizer.* ~/.config/systemd/user/
+   ```
+
+2. **Configure the service**
+   Edit `~/.config/systemd/user/chief-summarizer.service` and update the `ExecStart` path:
+   ```ini
+   ExecStart=%h/.local/bin/chief-summarizer --max-files 3 /path/to/your/documents
+   ```
+   Replace `/path/to/your/documents` with your actual document directory.
+
+3. **Verify prerequisites**
+   - Binary installed: `which chief-summarizer`
+   - Config exists: `ls ~/.config/chiefsummarizer.yaml`
+   - PATH includes `~/.local/bin`
+
+4. **Enable and start**
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now chief-summarizer.timer
+   ```
+
+5. **Check status**
+   ```bash
+   systemctl --user status chief-summarizer.timer
+   systemctl --user list-timers
+   ```
+
+### Timer Configuration
+- **Interval**: Every 2 hours (`OnUnitActiveSec=2h`)
+- **Limit**: Max 3 files per run (`--max-files 3`)
+- **Type**: User-level service (no root required)
+
+## Project Structure
+
+```
+.
+├── cmd/
+│   └── chief-summarizer/
+│       └── main.go          # Main CLI entry point
+├── systemd/
+│   ├── chief-summarizer.service
+│   └── chief-summarizer.timer
+├── Makefile
+└── README.md
+```
+
+### Key Components
+- **`main.go`**: CLI flag parsing, model selection, file discovery, and processing pipeline
+- **`Config`**: Holds all CLI configuration options
+- **`processFile`**: Core pipeline for reading, chunking, summarizing, and writing
+- **Systemd units**: User-level automation for scheduled summarization
+
+## Contributing
+
+Contributions are welcome! Future improvements:
+- Modular packages (`internal/chunking`, `internal/ollama`, `internal/prompts`)
+- Enhanced error handling and recovery
+- Support for additional LLM backends
+- Parallel processing optimizations
+
+## License
+
+MIT License - see LICENSE file for details.

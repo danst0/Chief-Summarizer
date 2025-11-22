@@ -1,0 +1,13 @@
+[Unit]
+Description=Chief Summarizer batch run
+ConditionPathExists=%h/.config/chiefsummarizer.yaml
+
+[Service]
+Type=oneshot
+# Update the root path argument below to point at the directory you want to summarize.
+ExecStartPre=/usr/bin/test -f %h/.config/chiefsummarizer.yaml
+ExecStart=%h/.local/bin/chief-summarizer --max-files 3 %h/Documents
+WorkingDirectory=%h
+
+[Install]
+WantedBy=default.target

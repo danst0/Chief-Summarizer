@@ -35,6 +35,7 @@ type Config struct {
 	Quiet          bool
 	Excludes       []*regexp.Regexp
 	RequestTimeout time.Duration
+	ConfigPath     string
 }
 
 type multiFlag []string
@@ -148,7 +149,7 @@ func parseFlags() Config {
 	flag.IntVar(&cfg.MaxFiles, "max-files", 0, "Max files to process (0 = unlimited)")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose output")
 	flag.BoolVar(&cfg.Quiet, "quiet", false, "Suppress progress/status output (errors still reported)")
-	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", 5*time.Minute, "HTTP request timeout (e.g. 300s, 5m)")
+	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", 10*time.Minute, "HTTP request timeout (e.g. 600s, 10m)")
 	var excludePatterns multiFlag
 	flag.Var(&excludePatterns, "exclude", "Regular expression for paths to skip (repeatable)")
 	version := flag.Bool("version", false, "Print version and exit")
@@ -173,6 +174,20 @@ func parseFlags() Config {
 		fmt.Fprintf(os.Stderr, "ERR  invalid root path %q: %v\n", cfg.RootDir, err)
 		os.Exit(1)
 	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERR  determine home directory: %v\n", err)
+		os.Exit(1)
+	}
+	cfg.ConfigPath = filepath.Join(homeDir, ".config", "chiefsummarizer.yaml")
+	if _, err := os.Stat(cfg.ConfigPath); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "ERR  config file %s not found; create it before running chief-summarizer\n", cfg.ConfigPath)
+		} else {
+			fmt.Fprintf(os.Stderr, "ERR  cannot access %s: %v\n", cfg.ConfigPath, err)
+		}
+		os.Exit(1)
+	}
 	if len(excludePatterns) > 0 {
 		cfg.Excludes = make([]*regexp.Regexp, 0, len(excludePatterns))
 		for _, pattern := range excludePatterns {
@@ -185,7 +200,7 @@ func parseFlags() Config {
 		}
 	}
 	if cfg.RequestTimeout <= 0 {
-		cfg.RequestTimeout = 5 * time.Minute
+		cfg.RequestTimeout = 10 * time.Minute
 	}
 
 	return cfg
@@ -253,7 +268,7 @@ func processFile(path, summaryPath string, cfg Config) error {
 		if err != nil {
 			return fmt.Errorf("chunk %d summarization failed: %w", idx+1, err)
 		}
-		chunkSummaries = append(chunkSummaries, strings.TrimSpace(resp))
+		chunkSummaries = append(chunkSummaries, stripThinkBlocks(resp))
 	}
 	lengthCategory := lengthCategoryFromRunes(len([]rune(trimmed)))
 	finalPrompt := buildFinalPrompt(chunkSummaries, lengthCategory)
@@ -262,7 +277,8 @@ func processFile(path, summaryPath string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("final summary failed: %w", err)
 	}
-	if err := os.WriteFile(summaryPath, []byte(strings.TrimSpace(finalSummary)+"\n"), 0o644); err != nil {
+	cleanedSummary := stripThinkBlocks(finalSummary)
+	if err := os.WriteFile(summaryPath, []byte(cleanedSummary+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write summary: %w", err)
 	}
 	return nil
@@ -339,7 +355,7 @@ func chunkText(text string, size, overlap int) []string {
 func buildChunkPrompt(chunk string) string {
 	var b strings.Builder
 	b.WriteString("You are \"Chief Summarizer\", an assistant that creates concise summaries in the original language of the text.\n\n")
-	b.WriteString("Task:\n- Read the following markdown excerpt.\n- Write a short summary of this excerpt.\n- Use the SAME LANGUAGE as the text (usually German).\n- Keep names, dates and key facts accurate.\n- Do NOT add your own interpretations or new ideas.\n- Do NOT write an overall document summary, only summarize THIS excerpt.\n\n")
+	b.WriteString("Task:\n- Read the following markdown excerpt.\n- Write a short summary of this excerpt.\n- Use the SAME LANGUAGE as the text (usually German).\n- Keep names, dates and key facts accurate.\n- Do NOT add your own interpretations or new ideas.\n- Do NOT write an overall document summary, only summarize THIS excerpt.\n- Do NOT include any sections labelled 'Thinking' or hidden reasoning notes.\n\n")
 	b.WriteString("Output format:\n- 1 short paragraph in plain text (no headings).\n- Maximum ~120 words.\n\nExcerpt:\n---\n")
 	b.WriteString(chunk)
 	b.WriteString("\n---\n")
@@ -349,7 +365,7 @@ func buildChunkPrompt(chunk string) string {
 func buildFinalPrompt(chunkSummaries []string, lengthCategory string) string {
 	var b strings.Builder
 	b.WriteString("You are \"Chief Summarizer\", an assistant that creates structured summaries in the original language of the source text.\n\n")
-	b.WriteString("Task:\n- You receive several partial summaries of different excerpts of ONE long markdown document.\n- Combine them into ONE cohesive summary.\n- Remove repetition and contradictions.\n- Maintain the SAME LANGUAGE as the original text (usually German).\n- Keep important names, dates and numbers.\n- Be neutral and factual.\n\n")
+	b.WriteString("Task:\n- You receive several partial summaries of different excerpts of ONE long markdown document.\n- Combine them into ONE cohesive summary.\n- Remove repetition and contradictions.\n- Maintain the SAME LANGUAGE as the original text (usually German).\n- Keep important names, dates and numbers.\n- Be neutral and factual.\n- Do NOT include any \"Thinking\" sections or hidden reasoning notes in the response.\n\n")
 	b.WriteString("Output format (Markdown, fixed):\n\n1. First, write a very short two-line \"Ultra-Kurzfassung\" overview:\n   - Line 1: one short sentence describing the main topic.\n   - Line 2: one short sentence describing the main outcome or conclusion.\n\n2. Then add a blank line.\n\n3. Then write the \"Ausführliche Zusammenfassung\" (detailed summary) in markdown:\n   - If the original document was short (~< 1.500 Wörter):\n     - write 2–4 short paragraphs OR 3–6 bullet points.\n   - If the original document was medium (1.500–5.000 Wörter):\n     - write 3–6 paragraphs and optionally 3–8 bullet points.\n   - If the original document was long (> 5.000 Wörter):\n     - use clear markdown headings (##) and bullet lists for structure.\n   - Always stay focused on the key points, decisions, arguments, and results.\n\n")
 	b.WriteString(fmt.Sprintf("Original document length category: %s.\n\n", lengthCategory))
 	b.WriteString("Input:\nThe following are partial summaries of the document, in order:\n\n---\n")
@@ -369,6 +385,13 @@ func lengthCategoryFromRunes(count int) string {
 	default:
 		return "LONG"
 	}
+}
+
+func stripThinkBlocks(text string) string {
+	// Remove <think>...</think> blocks (case-insensitive, multiline)
+	thinkPattern := regexp.MustCompile(`(?is)<think>.*?</think>\s*`)
+	cleaned := thinkPattern.ReplaceAllString(text, "")
+	return strings.TrimSpace(cleaned)
 }
 
 func listAvailableModels(host string) ([]string, error) {

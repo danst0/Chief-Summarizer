@@ -1,0 +1,28 @@
+# Chief Summarizer Configuration File
+# Copy this file to ~/.config/chiefsummarizer.yaml and customize as needed
+
+# Example configuration (currently all settings are via CLI flags)
+# This file is required to exist but can be empty for now.
+# Future versions may use this file for default settings like:
+#
+# ollama:
+#   host: http://localhost:11434
+#   preferred_models:
+#     - qwen3:14b
+#     - deepseek-r1:14b
+#     - llama3
+#
+# processing:
+#   chunk_size: 4000
+#   chunk_overlap: 400
+#   request_timeout: 10m
+#
+# output:
+#   force_overwrite: false
+#   verbose: false
+#   quiet: false
+#
+# filters:
+#   exclude_patterns:
+#     - "node_modules/.*"
+#     - ".git/.*"
