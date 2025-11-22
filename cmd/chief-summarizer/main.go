@@ -23,7 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "1.0.0"
+const version = "1.0.1"
 
 var preferredModels = []string{"qwen3:14b", "deepseek-r1:14b", "llama3"}
 var httpClient = &http.Client{Timeout: 120 * time.Second}
@@ -99,6 +99,10 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.Model = model
+	
+	if !cfg.Quiet {
+		fmt.Printf("Using model: %s\n", cfg.Model)
+	}
 
 	hadError := false
 	plans := make([]string, 0)
