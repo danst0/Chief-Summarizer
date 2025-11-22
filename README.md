@@ -3,17 +3,17 @@
 `chief-summarizer` is a Go CLI that batch-generates structured markdown summaries for every `.md` document inside a directory tree. It orchestrates chunk-level and document-level calls to a local Ollama instance, writing the final result next to the source file.
 
 ## 1. Feature & CLI specification
-- **Invocation**: `chief-summarizer [flags] [rootDir]` where `rootDir` defaults to `.`.
+- **Invocation**: `chief-summarizer [flags] <rootPath>` where `rootPath` must be supplied and can reference either a directory tree or a single markdown file.
 - **File discovery**: walk every subdirectory, select regular `.md` files that do not already end in `_summary.md`.
 - **Summary placement**: write `<name>_summary.md` beside each source; skip when the file already exists unless `-force` is used.
 - **Chunking**: character-based slices with configurable size/overlap via `-chunk-size` (default 4000) and `-chunk-overlap` (default 400).
-- **Model selection**: connect to `GET /api/tags` on the Ollama host (default `http://localhost:11434`) and pick the best available model from `qwen2.5:14b`, `llama3.1:8b`, `mistral:7b`, unless `-model` overrides it.
+- **Model selection**: connect to `GET /api/tags` on the Ollama host (default `http://localhost:11434`) and pick the best available model from `qwen2.5:14b`, `llama3.1:8b`, `mistral:7b`, unless `-model` overrides it. If the exact model is missing, the tool automatically picks the closest installed variant (matching base names or prefixes) before falling back to any available model.
 - **Flags**: include `-host`, `-model`, `-chunk-size`, `-chunk-overlap`, `-force`, `-dry-run`, `-max-files`, `-verbose`, `-version`.
-- **Console output**: one status line per candidate (`OK`, `SKIP`, `DRY`, `ERR`) showing file paths, chunk counts, selected model, and failure reasons where applicable.
+- **Console output**: one status line per candidate (`OK`, `SKIP`, `DRY`, `ERR`) showing file paths, chunk counts, selected model, and failure reasons where applicable, plus live `CHNK` / `MERGE` indicators while Ollama works through chunks to show progress.
 - **Exit codes**: `0` when all processed files succeed, `1` whenever any error occurs (walk errors, I/O, LLM failure, etc.).
 
 ## 2. Processing logic / architecture
-1. **Init**: parse flags, resolve `rootDir`, negotiate the model (override > autodetect > fallback list).
+1. **Init**: parse flags, validate the required `rootPath`, negotiate the model (override > autodetect > fallback list).
 2. **Planning**: `filepath.WalkDir` captures every qualifying markdown file, derives the target filename, and applies `-force`, `-dry-run`, `-max-files` gates.
 3. **Pipeline (`processFile`)**:
    - Read the entire markdown document.
