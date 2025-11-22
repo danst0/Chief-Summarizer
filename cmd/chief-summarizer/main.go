@@ -20,7 +20,7 @@ import (
 var preferredModels = []string{"qwen3:14b", "deepseek-r1:14b", "llama3"}
 var errMaxFiles = errors.New("max-files limit reached")
 
-var httpClient = &http.Client{Timeout: 120 * time.Second}
+var httpClient = &http.Client{Timeout: 360 * time.Second}
 
 // Config captures all runtime options parsed from CLI flags.
 type Config struct {
