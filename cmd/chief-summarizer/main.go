@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -23,19 +24,34 @@ var httpClient = &http.Client{Timeout: 120 * time.Second}
 
 // Config captures all runtime options parsed from CLI flags.
 type Config struct {
-	RootDir      string
-	Host         string
-	Model        string
-	ChunkSize    int
-	ChunkOverlap int
-	Force        bool
-	DryRun       bool
-	MaxFiles     int
-	Verbose      bool
+	RootDir        string
+	Host           string
+	Model          string
+	ChunkSize      int
+	ChunkOverlap   int
+	Force          bool
+	DryRun         bool
+	MaxFiles       int
+	Verbose        bool
+	Quiet          bool
+	Excludes       []*regexp.Regexp
+	RequestTimeout time.Duration
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string {
+	return strings.Join(*m, ",")
+}
+
+func (m *multiFlag) Set(value string) error {
+	*m = append(*m, value)
+	return nil
 }
 
 func main() {
 	cfg := parseFlags()
+	httpClient.Timeout = cfg.RequestTimeout
 
 	model, err := chooseModel(cfg)
 	if err != nil {
@@ -49,8 +65,19 @@ func main() {
 
 	err = filepath.WalkDir(cfg.RootDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			fmt.Printf("ERR  %s (walk error: %v)\n", path, walkErr)
+			errorf("ERR  %s (walk error: %v)\n", path, walkErr)
 			hadError = true
+			return nil
+		}
+		display := displayPath(path, cfg.RootDir)
+		if matchesExclude(path, cfg.RootDir, cfg.Excludes) {
+			if d.IsDir() {
+				if cfg.Verbose {
+					statusf(cfg, "SKIP %s (directory excluded)\n", display)
+				}
+				return filepath.SkipDir
+			}
+			statusf(cfg, "SKIP %s (excluded by pattern)\n", display)
 			return nil
 		}
 		if d.IsDir() || !isMarkdown(path) || isSummaryFile(path) {
@@ -60,7 +87,7 @@ func main() {
 		summaryPath := summaryFilename(path)
 		if !cfg.Force {
 			if _, err := os.Stat(summaryPath); err == nil {
-				fmt.Printf("SKIP %s (summary exists)\n", path)
+				statusf(cfg, "SKIP %s (summary exists)\n", display)
 				return nil
 			}
 		}
@@ -70,26 +97,27 @@ func main() {
 		}
 
 		if cfg.DryRun {
-			fmt.Printf(
+			statusf(
+				cfg,
 				"DRY  %s (would create %s, model=%s, chunk=%d/%d)\n",
-				path, summaryPath, cfg.Model, cfg.ChunkSize, cfg.ChunkOverlap,
+				display, displayPath(summaryPath, cfg.RootDir), cfg.Model, cfg.ChunkSize, cfg.ChunkOverlap,
 			)
 			processed++
 			return nil
 		}
 
 		if err := processFile(path, summaryPath, cfg); err != nil {
-			fmt.Printf("ERR  %s (%v)\n", path, err)
+			errorf("ERR  %s (%v)\n", display, err)
 			hadError = true
 		} else {
-			fmt.Printf("OK   %s -> %s\n", path, summaryPath)
+			statusf(cfg, "OK   %s -> %s\n", display, displayPath(summaryPath, cfg.RootDir))
 		}
 		processed++
 		return nil
 	})
 
 	if err != nil && !errors.Is(err, errMaxFiles) {
-		fmt.Fprintf(os.Stderr, "ERR  walk error: %v\n", err)
+		errorf("ERR  walk error: %v\n", err)
 		hadError = true
 	}
 
@@ -108,6 +136,10 @@ func parseFlags() Config {
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "Dry run (no LLM calls, no writes)")
 	flag.IntVar(&cfg.MaxFiles, "max-files", 0, "Max files to process (0 = unlimited)")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose output")
+	flag.BoolVar(&cfg.Quiet, "quiet", false, "Suppress progress/status output (errors still reported)")
+	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", 2*time.Minute, "HTTP request timeout (e.g. 120s, 2m)")
+	var excludePatterns multiFlag
+	flag.Var(&excludePatterns, "exclude", "Regular expression for paths to skip (repeatable)")
 	version := flag.Bool("version", false, "Print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: chief-summarizer [flags] <root-path>\n")
@@ -129,6 +161,20 @@ func parseFlags() Config {
 	if _, err := os.Stat(cfg.RootDir); err != nil {
 		fmt.Fprintf(os.Stderr, "ERR  invalid root path %q: %v\n", cfg.RootDir, err)
 		os.Exit(1)
+	}
+	if len(excludePatterns) > 0 {
+		cfg.Excludes = make([]*regexp.Regexp, 0, len(excludePatterns))
+		for _, pattern := range excludePatterns {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERR  invalid -exclude pattern %q: %v\n", pattern, err)
+				os.Exit(2)
+			}
+			cfg.Excludes = append(cfg.Excludes, re)
+		}
+	}
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = 2 * time.Minute
 	}
 
 	return cfg
@@ -190,7 +236,7 @@ func processFile(path, summaryPath string, cfg Config) error {
 	}
 	chunkSummaries := make([]string, 0, len(chunks))
 	for idx, chunk := range chunks {
-		fmt.Printf("CHNK %s (%d/%d)\n", path, idx+1, len(chunks))
+		statusf(cfg, "CHNK %s (%d/%d)\n", displayPath(path, cfg.RootDir), idx+1, len(chunks))
 		prompt := buildChunkPrompt(chunk)
 		resp, err := callOllama(cfg.Host, cfg.Model, prompt)
 		if err != nil {
@@ -200,7 +246,7 @@ func processFile(path, summaryPath string, cfg Config) error {
 	}
 	lengthCategory := lengthCategoryFromRunes(len([]rune(trimmed)))
 	finalPrompt := buildFinalPrompt(chunkSummaries, lengthCategory)
-	fmt.Printf("MERGE %s (%d chunks)\n", path, len(chunkSummaries))
+	statusf(cfg, "MERGE %s (%d chunks)\n", displayPath(path, cfg.RootDir), len(chunkSummaries))
 	finalSummary, err := callOllama(cfg.Host, cfg.Model, finalPrompt)
 	if err != nil {
 		return fmt.Errorf("final summary failed: %w", err)
@@ -226,6 +272,17 @@ func summaryFilename(path string) string {
 	ext := filepath.Ext(base)
 	name := base[:len(base)-len(ext)]
 	return filepath.Join(dir, name+"_summary"+ext)
+}
+
+func statusf(cfg Config, format string, args ...any) {
+	if cfg.Quiet {
+		return
+	}
+	fmt.Printf(format, args...)
+}
+
+func errorf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format, args...)
 }
 
 func workersDefault() int {
@@ -407,4 +464,32 @@ func modelSimilarityScore(basePreferred, baseCandidate string) int {
 		return 1
 	}
 	return 0
+}
+
+func matchesExclude(path, root string, patterns []*regexp.Regexp) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	candidates := []string{path}
+	if rel, err := filepath.Rel(root, path); err == nil {
+		if rel == "." {
+			rel = filepath.Base(path)
+		}
+		candidates = append(candidates, rel)
+	}
+	for _, candidate := range candidates {
+		for _, re := range patterns {
+			if re.MatchString(candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func displayPath(path, root string) string {
+	if rel, err := filepath.Rel(root, path); err == nil && rel != "." {
+		return rel
+	}
+	return path
 }
