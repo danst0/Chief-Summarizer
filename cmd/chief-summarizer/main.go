@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -16,26 +17,59 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/blang/semver"
+	"github.com/rhysd/go-github-selfupdate/selfupdate"
+	"gopkg.in/yaml.v3"
 )
+
+const version = "1.0.0"
 
 var preferredModels = []string{"qwen3:14b", "deepseek-r1:14b", "llama3"}
 var httpClient = &http.Client{Timeout: 120 * time.Second}
 
 // Config captures all runtime options parsed from CLI flags.
 type Config struct {
-	RootDir        string
-	Host           string
-	Model          string
-	ChunkSize      int
-	ChunkOverlap   int
-	Force          bool
-	DryRun         bool
-	MaxFiles       int
-	Verbose        bool
-	Quiet          bool
-	Excludes       []*regexp.Regexp
-	RequestTimeout time.Duration
-	ConfigPath     string
+	RootDir         string
+	Host            string
+	Model           string
+	ChunkSize       int
+	ChunkOverlap    int
+	Force           bool
+	DryRun          bool
+	MaxFiles        int
+	Verbose         bool
+	Quiet           bool
+	Excludes        []*regexp.Regexp
+	RequestTimeout  time.Duration
+	ConfigPath      string
+	DisableAutoUpdate bool
+}
+
+// ConfigFile represents the YAML configuration file structure.
+type ConfigFile struct {
+	Ollama struct {
+		Host            string   `yaml:"host"`
+		PreferredModels []string `yaml:"preferred_models"`
+	} `yaml:"ollama"`
+	Processing struct {
+		RootPath       string `yaml:"root_path"`
+		ChunkSize      int    `yaml:"chunk_size"`
+		ChunkOverlap   int    `yaml:"chunk_overlap"`
+		RequestTimeout string `yaml:"request_timeout"`
+		MaxFiles       int    `yaml:"max_files"`
+	} `yaml:"processing"`
+	Output struct {
+		ForceOverwrite bool `yaml:"force_overwrite"`
+		Verbose        bool `yaml:"verbose"`
+		Quiet          bool `yaml:"quiet"`
+	} `yaml:"output"`
+	Filters struct {
+		ExcludePatterns []string `yaml:"exclude_patterns"`
+	} `yaml:"filters"`
+	Updates struct {
+		DisableAutoUpdate bool `yaml:"disable_autoupdate"`
+	} `yaml:"updates"`
 }
 
 type multiFlag []string
@@ -51,6 +85,12 @@ func (m *multiFlag) Set(value string) error {
 
 func main() {
 	cfg := parseFlags()
+	
+	// Check for updates (unless disabled)
+	if !cfg.DisableAutoUpdate {
+		doSelfUpdate()
+	}
+
 	httpClient.Timeout = cfg.RequestTimeout
 
 	model, err := chooseModel(cfg)
@@ -150,42 +190,97 @@ func parseFlags() Config {
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose output")
 	flag.BoolVar(&cfg.Quiet, "quiet", false, "Suppress progress/status output (errors still reported)")
 	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", 10*time.Minute, "HTTP request timeout (e.g. 600s, 10m)")
+	flag.BoolVar(&cfg.DisableAutoUpdate, "disable-autoupdate", false, "Disable automatic update checks")
 	var excludePatterns multiFlag
 	flag.Var(&excludePatterns, "exclude", "Regular expression for paths to skip (repeatable)")
-	version := flag.Bool("version", false, "Print version and exit")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: chief-summarizer [flags] <root-path>\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
-	if *version {
-		fmt.Println("chief-summarizer v0.1.0")
+	if *showVersion {
+		fmt.Printf("chief-summarizer v%s\n", version)
 		os.Exit(0)
 	}
 
-	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "ERR  root path argument is required")
-		flag.Usage()
-		os.Exit(2)
-	}
-	cfg.RootDir = flag.Arg(0)
-	if _, err := os.Stat(cfg.RootDir); err != nil {
-		fmt.Fprintf(os.Stderr, "ERR  invalid root path %q: %v\n", cfg.RootDir, err)
-		os.Exit(1)
-	}
+	// Determine config file path and load if it exists
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERR  determine home directory: %v\n", err)
 		os.Exit(1)
 	}
 	cfg.ConfigPath = filepath.Join(homeDir, ".config", "chiefsummarizer.yaml")
-	if _, err := os.Stat(cfg.ConfigPath); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "ERR  config file %s not found; create it before running chief-summarizer\n", cfg.ConfigPath)
-		} else {
-			fmt.Fprintf(os.Stderr, "ERR  cannot access %s: %v\n", cfg.ConfigPath, err)
+	
+	var configFile *ConfigFile
+	if _, err := os.Stat(cfg.ConfigPath); err == nil {
+		// Config file exists, try to load it
+		configFile, err = loadConfigFile(cfg.ConfigPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERR  failed to load config file: %v\n", err)
+			os.Exit(1)
 		}
+	} else {
+		// Config file doesn't exist, use empty config
+		configFile = &ConfigFile{}
+	}
+
+	// Apply config file defaults (CLI flags override config file)
+	if cfg.Host == "http://localhost:11434" && configFile.Ollama.Host != "" {
+		cfg.Host = configFile.Ollama.Host
+	}
+	if len(configFile.Ollama.PreferredModels) > 0 {
+		preferredModels = configFile.Ollama.PreferredModels
+	}
+	if cfg.ChunkSize == 4000 && configFile.Processing.ChunkSize > 0 {
+		cfg.ChunkSize = configFile.Processing.ChunkSize
+	}
+	if cfg.ChunkOverlap == 400 && configFile.Processing.ChunkOverlap > 0 {
+		cfg.ChunkOverlap = configFile.Processing.ChunkOverlap
+	}
+	if cfg.RequestTimeout == 10*time.Minute && configFile.Processing.RequestTimeout != "" {
+		if timeout, err := time.ParseDuration(configFile.Processing.RequestTimeout); err == nil {
+			cfg.RequestTimeout = timeout
+		}
+	}
+	if cfg.MaxFiles == 0 && configFile.Processing.MaxFiles > 0 {
+		cfg.MaxFiles = configFile.Processing.MaxFiles
+	}
+	if !cfg.Force && configFile.Output.ForceOverwrite {
+		cfg.Force = configFile.Output.ForceOverwrite
+	}
+	if !cfg.Verbose && configFile.Output.Verbose {
+		cfg.Verbose = configFile.Output.Verbose
+	}
+	if !cfg.Quiet && configFile.Output.Quiet {
+		cfg.Quiet = configFile.Output.Quiet
+	}
+	if !cfg.DisableAutoUpdate && configFile.Updates.DisableAutoUpdate {
+		cfg.DisableAutoUpdate = configFile.Updates.DisableAutoUpdate
+	}
+	if len(excludePatterns) == 0 && len(configFile.Filters.ExcludePatterns) > 0 {
+		excludePatterns = configFile.Filters.ExcludePatterns
+	}
+
+	// Determine root directory (CLI arg or config file)
+	if flag.NArg() > 0 {
+		cfg.RootDir = flag.Arg(0)
+	} else if configFile.Processing.RootPath != "" {
+		// Expand ~ in root path
+		if strings.HasPrefix(configFile.Processing.RootPath, "~/") {
+			cfg.RootDir = filepath.Join(homeDir, configFile.Processing.RootPath[2:])
+		} else {
+			cfg.RootDir = configFile.Processing.RootPath
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "ERR  root path must be specified via command line argument or config file (processing.root_path)")
+		flag.Usage()
+		os.Exit(2)
+	}
+
+	if _, err := os.Stat(cfg.RootDir); err != nil {
+		fmt.Fprintf(os.Stderr, "ERR  invalid root path %q: %v\n", cfg.RootDir, err)
 		os.Exit(1)
 	}
 	if len(excludePatterns) > 0 {
@@ -204,6 +299,18 @@ func parseFlags() Config {
 	}
 
 	return cfg
+}
+
+func loadConfigFile(path string) (*ConfigFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg ConfigFile
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
 func chooseModel(cfg Config) (string, error) {
@@ -366,7 +473,7 @@ func buildFinalPrompt(chunkSummaries []string, lengthCategory string) string {
 	var b strings.Builder
 	b.WriteString("You are \"Chief Summarizer\", an assistant that creates structured summaries in the original language of the source text.\n\n")
 	b.WriteString("Task:\n- You receive several partial summaries of different excerpts of ONE long markdown document.\n- Combine them into ONE cohesive summary.\n- Remove repetition and contradictions.\n- Maintain the SAME LANGUAGE as the original text (usually German).\n- Keep important names, dates and numbers.\n- Be neutral and factual.\n- Do NOT include any \"Thinking\" sections or hidden reasoning notes in the response.\n\n")
-	b.WriteString("Output format (Markdown, fixed):\n\n1. First, write a very short two-line \"Ultra-Kurzfassung\" overview:\n   - Line 1: one short sentence describing the main topic.\n   - Line 2: one short sentence describing the main outcome or conclusion.\n\n2. Then add a blank line.\n\n3. Then write the \"Ausführliche Zusammenfassung\" (detailed summary) in markdown:\n   - If the original document was short (~< 1.500 Wörter):\n     - write 2–4 short paragraphs OR 3–6 bullet points.\n   - If the original document was medium (1.500–5.000 Wörter):\n     - write 3–6 paragraphs and optionally 3–8 bullet points.\n   - If the original document was long (> 5.000 Wörter):\n     - use clear markdown headings (##) and bullet lists for structure.\n   - Always stay focused on the key points, decisions, arguments, and results.\n\n")
+	b.WriteString("Output format (proper Markdown with headings):\n\n1. Start with a level-2 heading: ## Ultra-Kurzfassung\n2. Below it, write two short sentences:\n   - Line 1: one short sentence describing the main topic.\n   - Line 2: one short sentence describing the main outcome or conclusion.\n\n3. Then add a blank line.\n\n4. Then add another level-2 heading: ## Ausführliche Zusammenfassung\n5. Below it, write the detailed summary:\n   - If the original document was short (~< 1.500 Wörter):\n     - write 2–4 short paragraphs OR 3–6 bullet points.\n   - If the original document was medium (1.500–5.000 Wörter):\n     - write 3–6 paragraphs and optionally 3–8 bullet points.\n   - If the original document was long (> 5.000 Wörter):\n     - use clear markdown headings (### level-3) and bullet lists for structure.\n   - Always stay focused on the key points, decisions, arguments, and results.\n\nIMPORTANT: Use proper markdown headings (## and ###) throughout. The output must be valid markdown.\n\n")
 	b.WriteString(fmt.Sprintf("Original document length category: %s.\n\n", lengthCategory))
 	b.WriteString("Input:\nThe following are partial summaries of the document, in order:\n\n---\n")
 	for i, summary := range chunkSummaries {
@@ -526,4 +633,39 @@ func displayPath(path, root string) string {
 		return rel
 	}
 	return path
+}
+
+func doSelfUpdate() {
+	latest, found, err := selfupdate.DetectLatest("danst0/Chief-Summarizer")
+	if err != nil {
+		log.Println("Error occurred while detecting latest version:", err)
+		return
+	}
+
+	v, err := semver.Parse(version)
+	if err != nil {
+		log.Println("Error parsing current version:", err)
+		return
+	}
+
+	if !found || latest.Version.LTE(v) {
+		log.Printf("Current version %s is the latest\n", version)
+		return
+	}
+
+	log.Printf("New version %s is available! (current: %s)\n", latest.Version, version)
+	log.Println("Updating binary...")
+
+	exe, err := os.Executable()
+	if err != nil {
+		log.Println("Could not locate executable path:", err)
+		return
+	}
+
+	if err := selfupdate.UpdateTo(latest.AssetURL, exe); err != nil {
+		log.Println("Error occurred while updating binary:", err)
+		return
+	}
+
+	log.Printf("Successfully updated to version %s\n", latest.Version)
 }

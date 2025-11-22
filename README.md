@@ -16,22 +16,26 @@ A Go CLI tool that automatically generates structured markdown summaries for all
 - 📊 **Progress Tracking**: Live chunk and merge indicators during processing
 - 🎲 **Randomized Processing**: Processes files in random order each run to avoid bias
 - ⚙️ **Highly Configurable**: Extensive CLI flags for customization
+- 🔄 **Automatic Updates**: Self-updates from GitHub releases on each execution
 
 ### Requirements
 - Go 1.21 or later
 - Running Ollama instance (default: `http://localhost:11434`)
-- Config file at `~/.config/chiefsummarizer.yaml` (required)
+- Config file at `~/.config/chiefsummarizer.yaml` (optional)
 
 ## Usage
 
 ### Basic Invocation
 ```bash
-chief-summarizer [flags] <rootPath>
+chief-summarizer [flags] [rootPath]
 ```
 
 The `rootPath` can be either:
 - A directory tree (processes all `.md` files recursively)
 - A single markdown file
+- Omitted if `processing.root_path` is set in the config file
+
+**Note**: If no config file exists at `~/.config/chiefsummarizer.yaml`, all settings use their defaults and `rootPath` must be provided as a command line argument.
 
 ### CLI Flags
 
@@ -48,6 +52,7 @@ The `rootPath` can be either:
 | `-quiet` | `false` | Minimal output |
 | `-exclude` | none | Regex pattern to exclude files (repeatable) |
 | `-request-timeout` | `10m` | HTTP request timeout |
+| `-disable-autoupdate` | `false` | Disable automatic update checks |
 | `-version` | - | Show version info |
 
 ### Output Status Codes
@@ -64,18 +69,23 @@ The `rootPath` can be either:
 
 `chief-summarizer` follows a systematic pipeline:
 
-1. **Initialization**
+1. **Update Check**
+   - On each execution, checks GitHub for newer releases
+   - Automatically downloads and updates the binary if a new version is available
+   - Continues with normal operation after update
+
+2. **Initialization**
    - Parse CLI flags and validate `rootPath`
    - Negotiate model selection (override → auto-detect → fallback)
    - Configure HTTP timeout
 
-2. **File Discovery**
+3. **File Discovery**
    - Walk directory tree using `filepath.WalkDir`
    - Select `.md` files that don't end in `_summary.md`
    - Apply exclusion patterns (`-exclude`)
    - Shuffle file list for randomized processing
 
-3. **Processing Pipeline**
+4. **Processing Pipeline**
    - Read markdown document
    - Split into chunks at rune boundaries (respects size/overlap)
    - Generate chunk summaries via Ollama API
@@ -83,7 +93,7 @@ The `rootPath` can be either:
    - Synthesize final summary from chunks
    - Write `<name>_summary.md` atomically
 
-4. **Error Handling**
+5. **Error Handling**
    - Continue processing on recoverable errors
    - Track error state per file
    - Exit with code `1` if any errors occurred
@@ -125,24 +135,30 @@ Task:
 - Be neutral and factual.
 - Do **not** output any "Thinking" paragraphs or hidden reasoning traces.
 
-Output format (Markdown, fixed):
+Output format (proper Markdown with headings):
 
-1. First, write a very short two-line "Ultra-Kurzfassung" overview:
+1. Start with a level-2 heading: ## Ultra-Kurzfassung
+2. Below it, write two short sentences:
    - Line 1: one short sentence describing the main topic.
    - Line 2: one short sentence describing the main outcome or conclusion.
 
-2. Then add a blank line.
+3. Then add a blank line.
 
-3. Then write the "Ausführliche Zusammenfassung" (detailed summary) in markdown:
+4. Then add another level-2 heading: ## Ausführliche Zusammenfassung
+5. Below it, write the detailed summary:
    - If the original document was short (~< 1.500 Wörter):
      - write 2–4 short paragraphs OR 3–6 bullet points.
    - If the original document was medium (1.500–5.000 Wörter):
      - write 3–6 paragraphs and optionally 3–8 bullet points.
    - If the original document was long (> 5.000 Wörter):
-     - use clear markdown headings (##) and bullet lists for structure.
+     - use clear markdown headings (### level-3) and bullet lists for structure.
    - Always stay focused on the key points, decisions, arguments, and results.
 
+IMPORTANT: Use proper markdown headings (## and ###) throughout. The output must be valid markdown.
+
 Input:
+Original document length category: {{CATEGORY}}
+
 The following are partial summaries of the document, in order:
 
 ---
@@ -152,8 +168,6 @@ The following are partial summaries of the document, in order:
 Now produce ONLY the markdown summary as specified above.
 Do not add any intro text or explanations around it.
 ```
-
-> **Tip**: Prepend `Original document length category: SHORT|MEDIUM|LONG.` before the `Input:` block so the model can adjust the layout accordingly.
 
 ## Installation
 
@@ -168,13 +182,15 @@ Do not add any intro text or explanations around it.
    # or
    ollama pull mistral:7b
    ```
-4. Create config file:
+4. (Optional) Create and configure config file:
    ```bash
    mkdir -p ~/.config
    cp chiefsummarizer.yaml.example ~/.config/chiefsummarizer.yaml
+   # Edit the file to set your preferences
+   nano ~/.config/chiefsummarizer.yaml
    ```
    
-   The config file can be empty for now (all settings are via CLI flags), but it must exist.
+   The config file is optional. If it doesn't exist, all settings use their defaults. CLI flags always take precedence over config file values.
 
 ### Build & Install
 
@@ -215,8 +231,8 @@ Automate summary generation with the provided systemd units (runs every 2 hours,
 
 3. **Verify prerequisites**
    - Binary installed: `which chief-summarizer`
-   - Config exists: `ls ~/.config/chiefsummarizer.yaml`
    - PATH includes `~/.local/bin`
+   - (Optional) Config exists: `ls ~/.config/chiefsummarizer.yaml`
 
 4. **Enable and start**
    ```bash
@@ -255,6 +271,153 @@ Automate summary generation with the provided systemd units (runs every 2 hours,
 - **`processFile`**: Core pipeline for reading, chunking, summarizing, and writing
 - **Systemd units**: User-level automation for scheduled summarization
 
+## Automatic Updates
+
+`chief-summarizer` includes self-update functionality powered by [go-github-selfupdate](https://github.com/rhysd/go-github-selfupdate):
+
+- **Update Check**: On each execution, the tool checks GitHub for newer releases
+- **Automatic Download**: If a new version is available, it downloads and replaces the binary automatically
+- **Version Display**: Use `-version` flag to see the current version
+- **Disable Updates**: Use `-disable-autoupdate` flag or set `updates.disable_autoupdate: true` in config file
+
+### For Maintainers: Creating Releases
+
+To enable automatic updates, releases must include binary assets. Follow this complete workflow:
+
+#### Step 1: Update Version
+Edit `cmd/chief-summarizer/main.go` and update the version constant:
+```go
+const version = "1.0.1"
+```
+
+Commit the change:
+```bash
+git add cmd/chief-summarizer/main.go
+git commit -m "Bump version to 1.0.1"
+git push
+```
+
+#### Step 2: Create and Push Tag
+```bash
+git tag -a v1.0.1 -m "Release version 1.0.1"
+git push origin v1.0.1
+```
+
+#### Step 3: Cross-Compile Binaries
+Build for all supported platforms:
+
+```bash
+# Linux AMD64 (most common Linux systems)
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o chief-summarizer-linux-amd64 ./cmd/chief-summarizer
+
+# Linux ARM64 (Raspberry Pi, ARM servers)
+GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o chief-summarizer-linux-arm64 ./cmd/chief-summarizer
+
+# macOS AMD64 (Intel Macs)
+GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o chief-summarizer-darwin-amd64 ./cmd/chief-summarizer
+
+# macOS ARM64 (Apple Silicon Macs - M1/M2/M3)
+GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o chief-summarizer-darwin-arm64 ./cmd/chief-summarizer
+
+# Windows AMD64 (optional)
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o chief-summarizer-windows-amd64.exe ./cmd/chief-summarizer
+```
+
+**Build flags explained:**
+- `-ldflags="-s -w"`: Strip debug info and reduce binary size
+- `GOOS`: Target operating system
+- `GOARCH`: Target architecture
+
+#### Step 4: Create GitHub Release
+
+**Option A: Using GitHub Web Interface**
+
+1. Go to your repository: https://github.com/danst0/Chief-Summarizer
+2. Click "Releases" → "Draft a new release"
+3. Choose the tag `v1.0.1` (the one you just pushed)
+4. Set release title: `v1.0.1`
+5. Add release notes describing changes
+6. Drag and drop all compiled binaries to the assets section:
+   - `chief-summarizer-linux-amd64`
+   - `chief-summarizer-linux-arm64`
+   - `chief-summarizer-darwin-amd64`
+   - `chief-summarizer-darwin-arm64`
+   - `chief-summarizer-windows-amd64.exe` (if included)
+7. Click "Publish release"
+
+**Option B: Using GitHub CLI (`gh`)**
+
+```bash
+# Install gh CLI if not available: https://cli.github.com/
+
+# Create release and upload binaries
+gh release create v1.0.1 \
+  --title "v1.0.1" \
+  --notes "Release notes here" \
+  chief-summarizer-linux-amd64 \
+  chief-summarizer-linux-arm64 \
+  chief-summarizer-darwin-amd64 \
+  chief-summarizer-darwin-arm64 \
+  chief-summarizer-windows-amd64.exe
+```
+
+#### Step 5: Verify Auto-Update
+
+Test that the self-update mechanism works:
+```bash
+# Users on older versions will see:
+chief-summarizer -version
+# Output: "New version 1.0.1 is available! (current: 1.0.0)"
+#         "Updating binary..."
+#         "Successfully updated to version 1.0.1"
+```
+
+#### Important Notes
+
+- **Binary naming**: The self-update library automatically detects the correct binary based on OS/architecture
+- **File permissions**: Make binaries executable after download (library handles this automatically)
+- **Semantic versioning**: Always use proper semver format (v1.0.0, v1.0.1, etc.)
+- **Release notes**: Document breaking changes, new features, and bug fixes
+
+#### Build Script (Optional)
+
+Create a `scripts/build-release.sh` for convenience:
+
+```bash
+#!/bin/bash
+VERSION=${1:-"dev"}
+
+echo "Building Chief Summarizer v${VERSION} for all platforms..."
+
+# Create dist directory
+mkdir -p dist
+
+# Build flags
+LDFLAGS="-s -w"
+
+# Linux
+GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/chief-summarizer-linux-amd64 ./cmd/chief-summarizer
+GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/chief-summarizer-linux-arm64 ./cmd/chief-summarizer
+
+# macOS
+GOOS=darwin GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/chief-summarizer-darwin-amd64 ./cmd/chief-summarizer
+GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/chief-summarizer-darwin-arm64 ./cmd/chief-summarizer
+
+# Windows
+GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/chief-summarizer-windows-amd64.exe ./cmd/chief-summarizer
+
+echo "✓ Binaries built in dist/"
+ls -lh dist/
+```
+
+Usage:
+```bash
+chmod +x scripts/build-release.sh
+./scripts/build-release.sh 1.0.1
+```
+
+The self-update mechanism will automatically detect and apply updates based on semantic versioning.
+
 ## Contributing
 
 Contributions are welcome! Future improvements:
@@ -262,6 +425,7 @@ Contributions are welcome! Future improvements:
 - Enhanced error handling and recovery
 - Support for additional LLM backends
 - Parallel processing optimizations
+- Automated CI/CD pipeline for releases
 
 ## License
 

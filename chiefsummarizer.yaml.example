@@ -13,9 +13,11 @@
 #     - llama3
 #
 # processing:
+#   root_path: ~/Documents
 #   chunk_size: 4000
 #   chunk_overlap: 400
 #   request_timeout: 10m
+#   max_files: 3
 #
 # output:
 #   force_overwrite: false
@@ -26,3 +28,6 @@
 #   exclude_patterns:
 #     - "node_modules/.*"
 #     - ".git/.*"
+#
+# updates:
+#   disable_autoupdate: false  # Set to true to disable automatic update checks

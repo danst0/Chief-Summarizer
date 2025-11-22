@@ -41,4 +41,4 @@
 - Project is successfully compiled and operational
 - README.md is up to date with comprehensive documentation
 - Systemd automation configured for scheduled runs
-- Config file requirement enforced at startup
+- Config file support implemented (optional YAML configuration)
