@@ -9,12 +9,12 @@
 - **Chunking**: character-based slices with configurable size/overlap via `-chunk-size` (default 4000) and `-chunk-overlap` (default 400).
 - **Model selection**: connect to `GET /api/tags` on the Ollama host (default `http://localhost:11434`) and pick the best available model from `qwen2.5:14b`, `llama3.1:8b`, `mistral:7b`, unless `-model` overrides it. If the exact model is missing, the tool automatically picks the closest installed variant (matching base names or prefixes) before falling back to any available model.
 - **Flags**: include `-host`, `-model`, `-chunk-size`, `-chunk-overlap`, `-force`, `-dry-run`, `-max-files`, `-verbose`, `-quiet`, `-exclude <regex>` (repeatable), `-request-timeout <duration>` (default `5m`), `-version`.
-- **Console output**: one status line per candidate (`OK`, `SKIP`, `DRY`, `ERR`) showing file paths, chunk counts, selected model, and failure reasons where applicable, plus live `CHNK` / `MERGE` indicators while Ollama works through chunks to show progress.
+- **Console output**: one status line per candidate (`OK`, `SKIP`, `DRY`, `ERR`) showing file paths, chunk counts, selected model, and failure reasons where applicable, plus live `CHNK` / `MERGE` indicators while Ollama works through chunks to show progress. Files are processed in a randomized order on every run to avoid bias.
 - **Exit codes**: `0` when all processed files succeed, `1` whenever any error occurs (walk errors, I/O, LLM failure, etc.).
 
 ## 2. Processing logic / architecture
 1. **Init**: parse flags, validate the required `rootPath`, derive the HTTP timeout (default 5m, overridable via `-request-timeout`), negotiate the model (override > autodetect > fallback list).
-2. **Planning**: `filepath.WalkDir` captures every qualifying markdown file, derives the target filename, and applies exclusion regexes (`-exclude`), `-force`, `-dry-run`, and `-max-files` gates. Console chatter (status/progress lines) respects `-quiet`.
+2. **Planning**: `filepath.WalkDir` captures every qualifying markdown file, derives the target filename, and applies exclusion regexes (`-exclude`), `-force`, `-dry-run`, and `-max-files` gates. The resulting candidate list is shuffled before processing so execution order changes per run. Console chatter (status/progress lines) respects `-quiet`.
 3. **Pipeline (`processFile`)**:
    - Read the entire markdown document.
    - Chunk text at rune boundaries respecting configured size/overlap.
@@ -92,7 +92,15 @@ Do not add any intro text or explanations around it.
 
 > Tip: prepend `Original document length category: SHORT|MEDIUM|LONG.` before the `Input:` block so the model can tune the layout.
 
-## 4. Rough Go skeleton
+## 4. Build & install
+
+- Build the CLI: `make build`
+- Install into `~/.local/bin`: `make install`
+- Remove the local binary: `make clean`
+
+Ensure `~/.local/bin` is on your `PATH` so `chief-summarizer` is discoverable.
+
+## 5. Rough Go skeleton
 - `cmd/chief-summarizer/main.go` wires together flag parsing, model selection, directory walking, and the future processing pipeline.
 - `Config` holds every CLI option; `preferredModels` enumerates default model priorities.
 - Helper stubs (`isMarkdown`, `isSummaryFile`, `summaryFilename`, `workersDefault`) isolate filesystem logic.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,9 +19,7 @@ import (
 )
 
 var preferredModels = []string{"qwen3:14b", "deepseek-r1:14b", "llama3"}
-var errMaxFiles = errors.New("max-files limit reached")
-
-var httpClient = &http.Client{Timeout: 360 * time.Second}
+var httpClient = &http.Client{Timeout: 120 * time.Second}
 
 // Config captures all runtime options parsed from CLI flags.
 type Config struct {
@@ -61,7 +60,7 @@ func main() {
 	cfg.Model = model
 
 	hadError := false
-	processed := 0
+	plans := make([]string, 0)
 
 	err = filepath.WalkDir(cfg.RootDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -84,41 +83,53 @@ func main() {
 			return nil
 		}
 
+		plans = append(plans, path)
+		return nil
+	})
+
+	if err != nil {
+		errorf("ERR  walk error: %v\n", err)
+		hadError = true
+	}
+
+	processed := 0
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rnd.Shuffle(len(plans), func(i, j int) {
+		plans[i], plans[j] = plans[j], plans[i]
+	})
+
+	for _, path := range plans {
+		if cfg.MaxFiles > 0 && processed >= cfg.MaxFiles {
+			break
+		}
+		display := displayPath(path, cfg.RootDir)
 		summaryPath := summaryFilename(path)
+		summaryDisplay := displayPath(summaryPath, cfg.RootDir)
+
 		if !cfg.Force {
 			if _, err := os.Stat(summaryPath); err == nil {
 				statusf(cfg, "SKIP %s (summary exists)\n", display)
-				return nil
+				continue
 			}
-		}
-
-		if cfg.MaxFiles > 0 && processed >= cfg.MaxFiles {
-			return errMaxFiles
 		}
 
 		if cfg.DryRun {
 			statusf(
 				cfg,
 				"DRY  %s (would create %s, model=%s, chunk=%d/%d)\n",
-				display, displayPath(summaryPath, cfg.RootDir), cfg.Model, cfg.ChunkSize, cfg.ChunkOverlap,
+				display, summaryDisplay, cfg.Model, cfg.ChunkSize, cfg.ChunkOverlap,
 			)
 			processed++
-			return nil
+			continue
 		}
 
 		if err := processFile(path, summaryPath, cfg); err != nil {
 			errorf("ERR  %s (%v)\n", display, err)
 			hadError = true
 		} else {
-			statusf(cfg, "OK   %s -> %s\n", display, displayPath(summaryPath, cfg.RootDir))
+			statusf(cfg, "OK   %s -> %s\n", display, summaryDisplay)
 		}
 		processed++
-		return nil
-	})
-
-	if err != nil && !errors.Is(err, errMaxFiles) {
-		errorf("ERR  walk error: %v\n", err)
-		hadError = true
 	}
 
 	if hadError {
