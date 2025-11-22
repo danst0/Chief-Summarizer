@@ -137,7 +137,7 @@ func parseFlags() Config {
 	flag.IntVar(&cfg.MaxFiles, "max-files", 0, "Max files to process (0 = unlimited)")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose output")
 	flag.BoolVar(&cfg.Quiet, "quiet", false, "Suppress progress/status output (errors still reported)")
-	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", 2*time.Minute, "HTTP request timeout (e.g. 120s, 2m)")
+	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", 5*time.Minute, "HTTP request timeout (e.g. 300s, 5m)")
 	var excludePatterns multiFlag
 	flag.Var(&excludePatterns, "exclude", "Regular expression for paths to skip (repeatable)")
 	version := flag.Bool("version", false, "Print version and exit")
@@ -174,7 +174,7 @@ func parseFlags() Config {
 		}
 	}
 	if cfg.RequestTimeout <= 0 {
-		cfg.RequestTimeout = 2 * time.Minute
+		cfg.RequestTimeout = 5 * time.Minute
 	}
 
 	return cfg
