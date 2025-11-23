@@ -23,7 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "1.0.4"
+const version = "1.1.0"
 
 var preferredModels = []string{"qwen3:14b", "deepseek-r1:14b", "llama3"}
 var httpClient = &http.Client{Timeout: 120 * time.Second}
@@ -479,7 +479,7 @@ func chunkText(text string, size, overlap int) []string {
 func buildChunkPrompt(chunk string) string {
 	var b strings.Builder
 	b.WriteString("You are \"Chief Summarizer\", an assistant that creates concise summaries in the original language of the text.\n\n")
-	b.WriteString("Task:\n- Read the following markdown excerpt.\n- Write a short summary of this excerpt.\n- Use the SAME LANGUAGE as the text (usually German).\n- Keep names, dates and key facts accurate.\n- Do NOT add your own interpretations or new ideas.\n- Do NOT write an overall document summary, only summarize THIS excerpt.\n- Do NOT include any sections labelled 'Thinking' or hidden reasoning notes.\n\n")
+	b.WriteString("Task:\n- Read the following markdown excerpt.\n- The content is usually a diary entry written in the first person.\n- Write a short summary of this excerpt.\n- Use the SAME LANGUAGE as the text (usually German).\n- Preserve the first-person perspective (Ich-Form) exactly as in the source.\n- Keep names, dates and key facts accurate.\n- Do NOT add your own interpretations or new ideas.\n- Do NOT write an overall document summary, only summarize THIS excerpt.\n- Do NOT include any sections labelled 'Thinking' or hidden reasoning notes.\n\n")
 	b.WriteString("Output format:\n- 1 short paragraph in plain text (no headings).\n- Maximum ~120 words.\n\nExcerpt:\n---\n")
 	b.WriteString(chunk)
 	b.WriteString("\n---\n")
@@ -489,7 +489,7 @@ func buildChunkPrompt(chunk string) string {
 func buildFinalPrompt(chunkSummaries []string, lengthCategory string) string {
 	var b strings.Builder
 	b.WriteString("You are \"Chief Summarizer\", an assistant that creates structured summaries in the original language of the source text.\n\n")
-	b.WriteString("Task:\n- You receive several partial summaries of different excerpts of ONE long markdown document.\n- Combine them into ONE cohesive summary.\n- Remove repetition and contradictions.\n- Maintain the SAME LANGUAGE as the original text (usually German).\n- Keep important names, dates and numbers.\n- Be neutral and factual.\n- Do NOT include any \"Thinking\" sections or hidden reasoning notes in the response.\n\n")
+	b.WriteString("Task:\n- You receive several partial summaries of different excerpts of ONE long markdown document.\n- The document is usually a diary written in the first person.\n- Combine them into ONE cohesive summary.\n- Remove repetition and contradictions.\n- Maintain the SAME LANGUAGE as the original text (usually German).\n- Preserve the first-person perspective (Ich-Form) exactly as in the source.\n- Keep important names, dates and numbers.\n- Be neutral and factual.\n- Do NOT include any \"Thinking\" sections or hidden reasoning notes in the response.\n\n")
 	b.WriteString("Output format (proper Markdown with headings):\n\n1. Start with a level-2 heading: ## Ultra-Kurzfassung\n2. Below it, write two short sentences:\n   - Line 1: one short sentence describing the main topic.\n   - Line 2: one short sentence describing the main outcome or conclusion.\n\n3. Then add a blank line.\n\n4. Then add another level-2 heading: ## Ausführliche Zusammenfassung\n5. Below it, write the detailed summary:\n   - If the original document was short (~< 1.500 Wörter):\n     - write 2–4 short paragraphs OR 3–6 bullet points.\n   - If the original document was medium (1.500–5.000 Wörter):\n     - write 3–6 paragraphs and optionally 3–8 bullet points.\n   - If the original document was long (> 5.000 Wörter):\n     - use clear markdown headings (### level-3) and bullet lists for structure.\n   - Always stay focused on the key points, decisions, arguments, and results.\n\nIMPORTANT: Use proper markdown headings (## and ###) throughout. The output must be valid markdown.\n\n")
 	b.WriteString("Do NOT add any footer or metadata lines; the system will append them.\n\n")
 	b.WriteString(fmt.Sprintf("Original document length category: %s.\n\n", lengthCategory))
@@ -504,7 +504,7 @@ func buildFinalPrompt(chunkSummaries []string, lengthCategory string) string {
 func buildIntermediatePrompt(partialSummaries []string) string {
 	var b strings.Builder
 	b.WriteString("You are \"Chief Summarizer\", an assistant that consolidates partial summaries into a concise overview while keeping the original language.\n\n")
-	b.WriteString("Task:\n- Merge the following partial summaries from the same document into a single partial summary.\n- Remove duplicated information and resolve conflicts.\n- Maintain the SAME LANGUAGE as the inputs (usually German).\n- Keep important names, dates and numbers.\n- Use 1–2 short paragraphs OR 3–5 bullet points.\n- Do NOT add headings, intro text, or any sections labelled 'Thinking'.\n\n")
+	b.WriteString("Task:\n- Merge the following partial summaries from the same document into a single partial summary.\n- The document is usually a diary written in the first person.\n- Remove duplicated information and resolve conflicts.\n- Maintain the SAME LANGUAGE as the inputs (usually German).\n- Preserve the first-person perspective (Ich-Form) exactly as in the source.\n- Keep important names, dates and numbers.\n- Use 1–2 short paragraphs OR 3–5 bullet points.\n- Do NOT add headings, intro text, or any sections labelled 'Thinking'.\n\n")
 	b.WriteString("Input partial summaries:\n---\n")
 	for i, summary := range partialSummaries {
 		b.WriteString(fmt.Sprintf("Summary %d:\n%s\n\n", i+1, summary))
@@ -546,7 +546,11 @@ func mergeChunkSummaries(path string, chunkSummaries []string, lengthCategory st
 		working = condensed
 	}
 
-	statusf(cfg, "MERGE %s (final, %d inputs, %d original chunks)\n", displayPath(path, cfg.RootDir), len(working), originalCount)
+	if originalCount == 1 {
+		statusf(cfg, "FINAL %s (formatting single chunk)\n", displayPath(path, cfg.RootDir))
+	} else {
+		statusf(cfg, "MERGE %s (final, %d inputs, %d original chunks)\n", displayPath(path, cfg.RootDir), len(working), originalCount)
+	}
 	finalPrompt := buildFinalPrompt(working, lengthCategory)
 	finalSummary, err := callOllama(cfg.Host, cfg.Model, finalPrompt)
 	if err != nil {
@@ -557,8 +561,9 @@ func mergeChunkSummaries(path string, chunkSummaries []string, lengthCategory st
 
 func buildSummaryFooter(generatedAt time.Time, duration time.Duration, chunkCount int, cfg Config) string {
 	return fmt.Sprintf(
-		"\n\n---\n_Generated automatically on %s by Chief Summarizer (AI) | Model: %s | Chunks: %d | ChunkSize/Overlap: %d/%d | Duration: %s._",
+		"\n\n---\n_Generated automatically on %s by Chief Summarizer (AI v%s) | Model: %s | Chunks: %d | ChunkSize/Overlap: %d/%d | Duration: %s._",
 		generatedAt.Format("2006-01-02 15:04:05 MST"),
+		version,
 		cfg.Model,
 		chunkCount,
 		cfg.ChunkSize,

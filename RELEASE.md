@@ -15,14 +15,14 @@ This guide explains how to create a new release with binaries for Chief Summariz
 
 Edit `cmd/chief-summarizer/main.go`:
 ```go
-const version = "1.0.4"  // Change this to your new version
+const version = "1.1.0"  // Change this to your new version
 ```
 
 ### 2. Commit and Push Version Change
 
 ```bash
 git add cmd/chief-summarizer/main.go
-git commit -m "Bump version to 1.0.4"
+git commit -m "Bump version to 1.1.0"
 git push
 ```
 
@@ -30,7 +30,7 @@ git push
 
 Use the provided build script:
 ```bash
-./scripts/build-release.sh 1.0.4
+./scripts/build-release.sh 1.1.0
 ```
 
 This creates binaries in the `dist/` directory for:
@@ -41,8 +41,8 @@ This creates binaries in the `dist/` directory for:
 ### 4. Create Git Tag
 
 ```bash
-git tag -a v1.0.4 -m "Release version 1.0.4"
-git push origin v1.0.4
+git tag -a v1.1.0 -m "Release version 1.1.0"
+git push origin v1.1.0
 ```
 
 ### 5. Create GitHub Release
@@ -50,8 +50,8 @@ git push origin v1.0.4
 #### Option A: Using GitHub CLI (Recommended)
 
 ```bash
-gh release create v1.0.4 \
-  --title "v1.0.4" \
+gh release create v1.1.0 \
+  --title "v1.1.0" \
   --notes "Release notes:
 - Feature: Description
 - Fix: Description
@@ -62,8 +62,8 @@ gh release create v1.0.4 \
 #### Option B: Using GitHub Web Interface
 
 1. Go to: https://github.com/danst0/Chief-Summarizer/releases/new
-2. Select tag: `v1.0.4`
-3. Release title: `v1.0.4`
+2. Select tag: `v1.1.0`
+3. Release title: `v1.1.0`
 4. Add release notes
 5. Drag and drop all files from `dist/` to the assets section
 6. Click "Publish release"
@@ -127,28 +127,28 @@ go mod download
 **Problem**: Auto-update not working
 - Ensure binary names follow the pattern: `chief-summarizer-{GOOS}-{GOARCH}[.exe]`
 - Verify all binaries are uploaded to the GitHub release
-- Check that the tag starts with `v` (e.g., `v1.0.4`)
+- Check that the tag starts with `v` (e.g., `v1.1.0`)
 
 ## Complete Example Workflow
 
 ```bash
 # 1. Update version in code
-vim cmd/chief-summarizer/main.go  # Set version = "1.0.4"
+vim cmd/chief-summarizer/main.go  # Set version = "1.1.0"
 
 # 2. Commit and push
 git add cmd/chief-summarizer/main.go
-git commit -m "Bump version to 1.0.4"
+git commit -m "Bump version to 1.1.0"
 git push
 
 # 3. Build binaries
-./scripts/build-release.sh 1.0.4
+./scripts/build-release.sh 1.1.0
 
 # 4. Create and push tag
-git tag -a v1.0.4 -m "Release version 1.0.4"
-git push origin v1.0.4
+git tag -a v1.1.0 -m "Release version 1.1.0"
+git push origin v1.1.0
 
 # 5. Create GitHub release with binaries
-gh release create v1.0.4 --title "v1.0.4" --notes "Release notes" dist/*
+gh release create v1.1.0 --title "v1.1.0" --notes "Release notes" dist/*
 
 # 6. Clean up
 rm -rf dist/

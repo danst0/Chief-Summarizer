@@ -310,20 +310,20 @@ To enable automatic updates, releases must include binary assets. Follow this co
 #### Step 1: Update Version
 Edit `cmd/chief-summarizer/main.go` and update the version constant:
 ```go
-const version = "1.0.4"
+const version = "1.1.0"
 ```
 
 Commit the change:
 ```bash
 git add cmd/chief-summarizer/main.go
-git commit -m "Bump version to 1.0.4"
+git commit -m "Bump version to 1.1.0"
 git push
 ```
 
 #### Step 2: Create and Push Tag
 ```bash
-git tag -a v1.0.4 -m "Release version 1.0.4"
-git push origin v1.0.4
+git tag -a v1.1.0 -m "Release version 1.1.0"
+git push origin v1.1.0
 ```
 
 #### Step 3: Cross-Compile Binaries
@@ -357,8 +357,8 @@ GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o chief-summarizer-windows-
 
 1. Go to your repository: https://github.com/danst0/Chief-Summarizer
 2. Click "Releases" → "Draft a new release"
-3. Choose the tag `v1.0.4` (the one you just pushed)
-4. Set release title: `v1.0.4`
+3. Choose the tag `v1.1.0` (the one you just pushed)
+4. Set release title: `v1.1.0`
 5. Add release notes describing changes
 6. Drag and drop all compiled binaries to the assets section:
    - `chief-summarizer-linux-amd64`
@@ -377,8 +377,8 @@ GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o chief-summarizer-windows-
 **Option A: Using GitHub CLI (Recommended)**
 
 ```bash
-gh release create v1.0.4 \
-   --title "v1.0.4" \
+gh release create v1.1.0 \
+   --title "v1.1.0" \
   --notes "Release notes here" \
   chief-summarizer-linux-amd64 \
   chief-summarizer-linux-arm64 \
@@ -393,16 +393,16 @@ Test that the self-update mechanism works:
 ```bash
 # Users on older versions will see:
 chief-summarizer -version
-# Output: "New version 1.0.4 is available! (current: 1.0.0)"
+# Output: "New version 1.1.0 is available! (current: 1.0.0)"
 #         "Updating binary..."
-#         "Successfully updated to version 1.0.4"
+#         "Successfully updated to version 1.1.0"
 ```
 
 #### Important Notes
 
 - **Binary naming**: The self-update library automatically detects the correct binary based on OS/architecture
 - **File permissions**: Make binaries executable after download (library handles this automatically)
-- **Semantic versioning**: Always use proper semver format (v1.0.0, v1.0.4, etc.)
+- **Semantic versioning**: Always use proper semver format (v1.0.0, v1.1.0, etc.)
 - **Release notes**: Document breaking changes, new features, and bug fixes
 
 #### Build Script (Optional)
@@ -439,7 +439,7 @@ ls -lh dist/
 Usage:
 ```bash
 chmod +x scripts/build-release.sh
-./scripts/build-release.sh 1.0.4
+./scripts/build-release.sh 1.1.0
 ```
 
 The self-update mechanism will automatically detect and apply updates based on semantic versioning.
