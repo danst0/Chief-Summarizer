@@ -23,7 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "1.0.3"
+const version = "1.0.4"
 
 var preferredModels = []string{"qwen3:14b", "deepseek-r1:14b", "llama3"}
 var httpClient = &http.Client{Timeout: 120 * time.Second}
@@ -368,6 +368,7 @@ func chooseModel(cfg Config) (string, error) {
 }
 
 func processFile(path, summaryPath string, cfg Config) error {
+	start := time.Now()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
@@ -397,7 +398,11 @@ func processFile(path, summaryPath string, cfg Config) error {
 		return err
 	}
 	cleanedSummary := stripThinkBlocks(finalSummary)
-	if err := os.WriteFile(summaryPath, []byte(cleanedSummary+"\n"), 0o644); err != nil {
+	generatedAt := time.Now()
+	duration := generatedAt.Sub(start)
+	footer := buildSummaryFooter(generatedAt, duration, len(chunkSummaries), cfg)
+	output := cleanedSummary + footer + "\n"
+	if err := os.WriteFile(summaryPath, []byte(output), 0o644); err != nil {
 		return fmt.Errorf("write summary: %w", err)
 	}
 	return nil
@@ -486,6 +491,7 @@ func buildFinalPrompt(chunkSummaries []string, lengthCategory string) string {
 	b.WriteString("You are \"Chief Summarizer\", an assistant that creates structured summaries in the original language of the source text.\n\n")
 	b.WriteString("Task:\n- You receive several partial summaries of different excerpts of ONE long markdown document.\n- Combine them into ONE cohesive summary.\n- Remove repetition and contradictions.\n- Maintain the SAME LANGUAGE as the original text (usually German).\n- Keep important names, dates and numbers.\n- Be neutral and factual.\n- Do NOT include any \"Thinking\" sections or hidden reasoning notes in the response.\n\n")
 	b.WriteString("Output format (proper Markdown with headings):\n\n1. Start with a level-2 heading: ## Ultra-Kurzfassung\n2. Below it, write two short sentences:\n   - Line 1: one short sentence describing the main topic.\n   - Line 2: one short sentence describing the main outcome or conclusion.\n\n3. Then add a blank line.\n\n4. Then add another level-2 heading: ## Ausführliche Zusammenfassung\n5. Below it, write the detailed summary:\n   - If the original document was short (~< 1.500 Wörter):\n     - write 2–4 short paragraphs OR 3–6 bullet points.\n   - If the original document was medium (1.500–5.000 Wörter):\n     - write 3–6 paragraphs and optionally 3–8 bullet points.\n   - If the original document was long (> 5.000 Wörter):\n     - use clear markdown headings (### level-3) and bullet lists for structure.\n   - Always stay focused on the key points, decisions, arguments, and results.\n\nIMPORTANT: Use proper markdown headings (## and ###) throughout. The output must be valid markdown.\n\n")
+	b.WriteString("Do NOT add any footer or metadata lines; the system will append them.\n\n")
 	b.WriteString(fmt.Sprintf("Original document length category: %s.\n\n", lengthCategory))
 	b.WriteString("Input:\nThe following are partial summaries of the document, in order:\n\n---\n")
 	for i, summary := range chunkSummaries {
@@ -547,6 +553,48 @@ func mergeChunkSummaries(path string, chunkSummaries []string, lengthCategory st
 		return "", err
 	}
 	return stripThinkBlocks(finalSummary), nil
+}
+
+func buildSummaryFooter(generatedAt time.Time, duration time.Duration, chunkCount int, cfg Config) string {
+	return fmt.Sprintf(
+		"\n\n---\n_Generated automatically on %s by Chief Summarizer (AI) | Model: %s | Chunks: %d | ChunkSize/Overlap: %d/%d | Duration: %s._",
+		generatedAt.Format("2006-01-02 15:04:05 MST"),
+		cfg.Model,
+		chunkCount,
+		cfg.ChunkSize,
+		cfg.ChunkOverlap,
+		formatDuration(duration),
+	)
+}
+
+func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d < time.Millisecond {
+		return "<1ms"
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		seconds := float64(d) / float64(time.Second)
+		return fmt.Sprintf("%.1fs", seconds)
+	}
+	if d < time.Hour {
+		minutes := int(d / time.Minute)
+		seconds := int((d % time.Minute) / time.Second)
+		if seconds == 0 {
+			return fmt.Sprintf("%dm", minutes)
+		}
+		return fmt.Sprintf("%dm%ds", minutes, seconds)
+	}
+	hours := int(d / time.Hour)
+	minutes := int((d % time.Hour) / time.Minute)
+	if minutes == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, minutes)
 }
 
 func lengthCategoryFromRunes(count int) string {
