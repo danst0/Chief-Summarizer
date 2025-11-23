@@ -5,7 +5,7 @@ VERSION=${1:-"dev"}
 
 if [ "$VERSION" = "dev" ]; then
     echo "Usage: $0 <version>"
-    echo "Example: $0 1.0.2"
+    echo "Example: $0 1.0.3"
     exit 1
 fi
 

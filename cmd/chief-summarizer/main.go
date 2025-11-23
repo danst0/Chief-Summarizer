@@ -23,26 +23,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "1.0.2"
+const version = "1.0.3"
 
 var preferredModels = []string{"qwen3:14b", "deepseek-r1:14b", "llama3"}
 var httpClient = &http.Client{Timeout: 120 * time.Second}
 
+const maxChunkMergeInputs = 4
+
 // Config captures all runtime options parsed from CLI flags.
 type Config struct {
-	RootDir         string
-	Host            string
-	Model           string
-	ChunkSize       int
-	ChunkOverlap    int
-	Force           bool
-	DryRun          bool
-	MaxFiles        int
-	Verbose         bool
-	Quiet           bool
-	Excludes        []*regexp.Regexp
-	RequestTimeout  time.Duration
-	ConfigPath      string
+	RootDir           string
+	Host              string
+	Model             string
+	ChunkSize         int
+	ChunkOverlap      int
+	Force             bool
+	DryRun            bool
+	MaxFiles          int
+	Verbose           bool
+	Quiet             bool
+	Excludes          []*regexp.Regexp
+	RequestTimeout    time.Duration
+	ConfigPath        string
 	DisableAutoUpdate bool
 }
 
@@ -85,7 +87,7 @@ func (m *multiFlag) Set(value string) error {
 
 func main() {
 	cfg := parseFlags()
-	
+
 	// Acquire lock to prevent concurrent runs
 	lockFile, err := acquireLock()
 	if err != nil {
@@ -93,7 +95,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer releaseLock(lockFile)
-	
+
 	// Check for updates (unless disabled)
 	if !cfg.DisableAutoUpdate {
 		doSelfUpdate()
@@ -107,7 +109,7 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.Model = model
-	
+
 	if !cfg.Quiet {
 		fmt.Printf("Using model: %s\n", cfg.Model)
 	}
@@ -224,7 +226,7 @@ func parseFlags() Config {
 		os.Exit(1)
 	}
 	cfg.ConfigPath = filepath.Join(homeDir, ".config", "chiefsummarizer.yaml")
-	
+
 	var configFile *ConfigFile
 	if _, err := os.Stat(cfg.ConfigPath); err == nil {
 		// Config file exists, try to load it
@@ -390,11 +392,9 @@ func processFile(path, summaryPath string, cfg Config) error {
 		chunkSummaries = append(chunkSummaries, stripThinkBlocks(resp))
 	}
 	lengthCategory := lengthCategoryFromRunes(len([]rune(trimmed)))
-	finalPrompt := buildFinalPrompt(chunkSummaries, lengthCategory)
-	statusf(cfg, "MERGE %s (%d chunks)\n", displayPath(path, cfg.RootDir), len(chunkSummaries))
-	finalSummary, err := callOllama(cfg.Host, cfg.Model, finalPrompt)
+	finalSummary, err := mergeChunkSummaries(path, chunkSummaries, lengthCategory, cfg)
 	if err != nil {
-		return fmt.Errorf("final summary failed: %w", err)
+		return err
 	}
 	cleanedSummary := stripThinkBlocks(finalSummary)
 	if err := os.WriteFile(summaryPath, []byte(cleanedSummary+"\n"), 0o644); err != nil {
@@ -493,6 +493,60 @@ func buildFinalPrompt(chunkSummaries []string, lengthCategory string) string {
 	}
 	b.WriteString("---\n\nNow produce ONLY the markdown summary as specified above.\nDo not add any intro text or explanations around it.\n")
 	return b.String()
+}
+
+func buildIntermediatePrompt(partialSummaries []string) string {
+	var b strings.Builder
+	b.WriteString("You are \"Chief Summarizer\", an assistant that consolidates partial summaries into a concise overview while keeping the original language.\n\n")
+	b.WriteString("Task:\n- Merge the following partial summaries from the same document into a single partial summary.\n- Remove duplicated information and resolve conflicts.\n- Maintain the SAME LANGUAGE as the inputs (usually German).\n- Keep important names, dates and numbers.\n- Use 1–2 short paragraphs OR 3–5 bullet points.\n- Do NOT add headings, intro text, or any sections labelled 'Thinking'.\n\n")
+	b.WriteString("Input partial summaries:\n---\n")
+	for i, summary := range partialSummaries {
+		b.WriteString(fmt.Sprintf("Summary %d:\n%s\n\n", i+1, summary))
+	}
+	b.WriteString("---\n\nReturn ONLY the consolidated partial summary, nothing else.\n")
+	return b.String()
+}
+
+func mergeChunkSummaries(path string, chunkSummaries []string, lengthCategory string, cfg Config) (string, error) {
+	if len(chunkSummaries) == 0 {
+		return "", errors.New("no chunk summaries to merge")
+	}
+	working := append([]string(nil), chunkSummaries...)
+	originalCount := len(chunkSummaries)
+	stage := 0
+
+	for len(working) > maxChunkMergeInputs {
+		stage++
+		groups := make([][]string, 0, (len(working)+maxChunkMergeInputs-1)/maxChunkMergeInputs)
+		for start := 0; start < len(working); start += maxChunkMergeInputs {
+			end := start + maxChunkMergeInputs
+			if end > len(working) {
+				end = len(working)
+			}
+			groups = append(groups, working[start:end])
+		}
+
+		condensed := make([]string, 0, len(groups))
+		display := displayPath(path, cfg.RootDir)
+		for idx, group := range groups {
+			statusf(cfg, "MERG %s (stage %d, group %d/%d, %d inputs)\n", display, stage, idx+1, len(groups), len(group))
+			prompt := buildIntermediatePrompt(group)
+			resp, err := callOllama(cfg.Host, cfg.Model, prompt)
+			if err != nil {
+				return "", fmt.Errorf("intermediate merge stage %d group %d failed: %w", stage, idx+1, err)
+			}
+			condensed = append(condensed, stripThinkBlocks(resp))
+		}
+		working = condensed
+	}
+
+	statusf(cfg, "MERGE %s (final, %d inputs, %d original chunks)\n", displayPath(path, cfg.RootDir), len(working), originalCount)
+	finalPrompt := buildFinalPrompt(working, lengthCategory)
+	finalSummary, err := callOllama(cfg.Host, cfg.Model, finalPrompt)
+	if err != nil {
+		return "", err
+	}
+	return stripThinkBlocks(finalSummary), nil
 }
 
 func lengthCategoryFromRunes(count int) string {
