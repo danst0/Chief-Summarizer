@@ -382,15 +382,50 @@ func processFile(path, summaryPath string, cfg Config) error {
 	if len(chunks) == 0 {
 		chunks = []string{trimmed}
 	}
-	chunkSummaries := make([]string, 0, len(chunks))
+
+	chunksPath := chunksFilename(path)
+	var chunkSummaries []string
+
+	if !cfg.Force {
+		if savedData, err := os.ReadFile(chunksPath); err == nil {
+			var saved []string
+			if err := json.Unmarshal(savedData, &saved); err == nil {
+				if len(saved) <= len(chunks) {
+					chunkSummaries = saved
+					if len(chunkSummaries) > 0 {
+						statusf(cfg, "RESUME %s (loaded %d/%d chunks)\n", displayPath(path, cfg.RootDir), len(chunkSummaries), len(chunks))
+					}
+				}
+			}
+		}
+	}
+
+	// Ensure capacity
+	if cap(chunkSummaries) < len(chunks) {
+		newSlice := make([]string, len(chunkSummaries), len(chunks))
+		copy(newSlice, chunkSummaries)
+		chunkSummaries = newSlice
+	}
+
 	for idx, chunk := range chunks {
+		if idx < len(chunkSummaries) {
+			continue
+		}
+
 		statusf(cfg, "CHNK %s (%d/%d)\n", displayPath(path, cfg.RootDir), idx+1, len(chunks))
 		prompt := buildChunkPrompt(chunk)
 		resp, err := callOllama(cfg.Host, cfg.Model, prompt)
 		if err != nil {
 			return fmt.Errorf("chunk %d summarization failed: %w", idx+1, err)
 		}
-		chunkSummaries = append(chunkSummaries, stripThinkBlocks(resp))
+		summary := stripThinkBlocks(resp)
+		chunkSummaries = append(chunkSummaries, summary)
+
+		if err := saveChunks(chunksPath, chunkSummaries); err != nil {
+			if cfg.Verbose {
+				statusf(cfg, "WARN failed to save checkpoint: %v\n", err)
+			}
+		}
 	}
 	lengthCategory := lengthCategoryFromRunes(len([]rune(trimmed)))
 	finalSummary, err := mergeChunkSummaries(path, chunkSummaries, lengthCategory, cfg)
@@ -405,6 +440,8 @@ func processFile(path, summaryPath string, cfg Config) error {
 	if err := os.WriteFile(summaryPath, []byte(output), 0o644); err != nil {
 		return fmt.Errorf("write summary: %w", err)
 	}
+
+	os.Remove(chunksPath)
 	return nil
 }
 
@@ -787,4 +824,20 @@ func doSelfUpdate() {
 	}
 
 	log.Printf("Successfully updated to version %s\n", latest.Version)
+}
+
+func chunksFilename(path string) string {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	name := base[:len(base)-len(ext)]
+	return filepath.Join(dir, name+"_chunks.json")
+}
+
+func saveChunks(path string, chunks []string) error {
+	data, err := json.MarshalIndent(chunks, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
