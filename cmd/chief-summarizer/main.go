@@ -27,6 +27,7 @@ const version = "1.1.0"
 
 var preferredModels = []string{"qwen3:14b", "deepseek-r1:14b", "llama3"}
 var httpClient = &http.Client{Timeout: 120 * time.Second}
+var ErrEmptyFile = errors.New("file is empty")
 
 const maxChunkMergeInputs = 4
 
@@ -183,8 +184,14 @@ func main() {
 		}
 
 		if err := processFile(path, summaryPath, cfg); err != nil {
-			errorf("ERR  %s (%v)\n", display, err)
-			hadError = true
+			if errors.Is(err, ErrEmptyFile) {
+				if cfg.Verbose {
+					statusf(cfg, "WARN %s (file is empty)\n", display)
+				}
+			} else {
+				errorf("ERR  %s (%v)\n", display, err)
+				hadError = true
+			}
 		} else {
 			statusf(cfg, "OK   %s -> %s\n", display, summaryDisplay)
 		}
@@ -381,7 +388,7 @@ func processFile(path, summaryPath string, cfg Config) error {
 	content := string(data)
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
-		return fmt.Errorf("file is empty")
+		return ErrEmptyFile
 	}
 	chunks := chunkText(trimmed, cfg.ChunkSize, cfg.ChunkOverlap)
 	if len(chunks) == 0 {
