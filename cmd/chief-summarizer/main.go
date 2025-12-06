@@ -188,6 +188,7 @@ func main() {
 	}
 
 	if hadError {
+		fmt.Fprintln(os.Stderr, "ERR  One or more errors occurred during processing.")
 		os.Exit(1)
 	}
 }
