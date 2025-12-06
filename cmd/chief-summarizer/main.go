@@ -131,7 +131,9 @@ func main() {
 				}
 				return filepath.SkipDir
 			}
-			statusf(cfg, "SKIP %s (excluded by pattern)\n", display)
+			if cfg.Verbose {
+				statusf(cfg, "SKIP %s (excluded by pattern)\n", display)
+			}
 			return nil
 		}
 		if d.IsDir() || !isMarkdown(path) || isSummaryFile(path) {
@@ -163,7 +165,9 @@ func main() {
 
 		if !cfg.Force {
 			if _, err := os.Stat(summaryPath); err == nil {
-				statusf(cfg, "SKIP %s (summary exists)\n", display)
+				if cfg.Verbose {
+					statusf(cfg, "SKIP %s (summary exists)\n", display)
+				}
 				continue
 			}
 		}
